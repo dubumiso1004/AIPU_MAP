@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import json
+import requests
 import folium
 from streamlit_folium import st_folium
 import joblib
@@ -13,7 +13,7 @@ def dms_to_decimal(dms_str):
     except:
         return None
 
-# 데이터 불러오기
+# 측정 데이터 로딩
 @st.cache_data
 def load_data():
     df = pd.read_excel("total_svf_gvi_bvi_250618.xlsx", sheet_name="gps 포함")
@@ -26,22 +26,20 @@ def load_data():
 model = joblib.load("pet_rf_model_trained.pkl")
 df = load_data()
 
-# UI 시작
-st.set_page_config(page_title="AI PET 예측 (조절 가능)", layout="wide")
+# Streamlit UI
+st.set_page_config(page_title="AI PET 예측 + 조절", layout="wide")
 st.title("📍 실측값 + 실시간 기상 기반 PET 예측")
-st.caption("SVF, GVI, BVI를 조절하여 열쾌적성(PET) 예측 결과 변화를 시뮬레이션합니다.")
+st.caption("SVF, GVI, BVI를 조절하며 PET 예측값 변화를 확인할 수 있습니다.")
 
-# 지도 및 결과 영역
+# 지도와 결과 분리
 col1, col2 = st.columns([1, 1.2])
 
-# 지도 영역
 with col1:
-    st.markdown("### 🗺️ 위치 선택")
+    st.markdown("### 🗺️ 지도에서 위치 선택")
     map_center = [35.233, 129.08]
     m = folium.Map(location=map_center, zoom_start=17)
     click_data = st_folium(m, height=450)
 
-# 결과 영역
 with col2:
     if click_data and click_data["last_clicked"]:
         lat = click_data["last_clicked"]["lat"]
@@ -57,31 +55,38 @@ with col2:
             st.error(f"❌ 측정지점 탐색 실패: {e}")
             st.stop()
 
-        # 측정값 → 사용자 조절 가능
-        st.markdown("#### 🎛️ SVF, GVI, BVI 조절")
+        # SVF/GVI/BVI 슬라이더 조절
+        st.markdown("#### 🎛️ 시뮬레이션: 시각지표 조절")
         svf = st.slider("SVF (하늘 비율)", 0.0, 1.0, float(nearest["svf"]), 0.01)
         gvi = st.slider("GVI (녹지 비율)", 0.0, 1.0, float(nearest["gvi"]), 0.01)
         bvi = st.slider("BVI (건물 비율)", 0.0, 1.0, float(nearest["bvi"]), 0.01)
 
-        # 실시간 기상 JSON 로드
+        # OpenWeatherMap API 호출
         try:
-            with open("kma_latest_weather.json", "r", encoding="utf-8") as f:
-                weather = json.load(f)
+            api_key = "2ced117aca9b446ae43cf82401d542a8"  # ← 본인 API 키
+            url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
+            response = requests.get(url)
+            weather = response.json()
 
-            air_temp = weather["airtemperature"]
-            humidity = weather["humidity"]
-            wind_speed = weather["windspeed"]
+            if "main" in weather and "wind" in weather:
+                air_temp = weather["main"]["temp"]
+                humidity = weather["main"]["humidity"]
+                wind_speed = weather["wind"]["speed"]
 
-            st.markdown("#### 🌤 실시간 기상 정보")
-            st.write({
-                "기온 (°C)": air_temp,
-                "습도 (%)": humidity,
-                "풍속 (m/s)": wind_speed
-            })
+                st.markdown("#### 🌤 실시간 기상 정보")
+                st.write({
+                    "기온 (°C)": air_temp,
+                    "습도 (%)": humidity,
+                    "풍속 (m/s)": wind_speed
+                })
+            else:
+                raise Exception(weather.get("message", "기상 정보 없음"))
 
         except Exception as e:
-            st.error(f"기상청 JSON 불러오기 실패: {e}")
-            st.stop()
+            st.warning(f"⚠️ 실시간 기상 실패 → 측정값 사용\n({e})")
+            air_temp = nearest["airtemperature"]
+            humidity = nearest["humidity"]
+            wind_speed = nearest["windspeed"]
 
         # AI 예측
         X_input = pd.DataFrame([{
@@ -94,8 +99,9 @@ with col2:
         }])
         predicted_pet = model.predict(X_input)[0]
 
-        st.markdown("#### 🤖 AI 기반 PET 예측")
+        st.markdown("#### 🤖 AI 기반 PET 예측 결과")
         st.success(f"예측 PET: **{predicted_pet:.2f}°C**")
-        st.caption("※ 슬라이더를 조절하면 AI 예측 결과가 실시간으로 반영됩니다.")
+        st.caption("측정값 + 실시간 기상 데이터 + 조절된 시각 지표를 기반으로 예측된 결과입니다.")
+
     else:
         st.info("지도를 클릭해 위치를 선택해주세요.")
